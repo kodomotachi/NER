@@ -26,11 +26,9 @@ env/
 .ipynb_checkpoints/
 
 # Data & artifacts (keep structure, ignore heavy files)
-data/raw/*
 !data/raw/.gitkeep
 data/interim/*
 !data/interim/.gitkeep
-data/processed/*
 !data/processed/.gitkeep
 data/external/*
 !data/external/.gitkeep
