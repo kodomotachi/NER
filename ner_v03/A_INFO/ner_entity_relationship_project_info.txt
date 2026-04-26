@@ -1,0 +1,223 @@
+NER Entity Relationship Mapping App - Project Information
+
+1. Project Title
+Entity Relationship Mapping System using Named Entity Recognition (NER)
+
+Alternative title:
+People, Organization, and Location Extractor using NER
+
+
+2. Project Idea
+This project is an application where the user pastes a paragraph of text, and the system automatically identifies important named entities in the text.
+
+The system detects:
+- Person names
+- Organization names
+- Location names
+
+After detecting these entities, the app tries to map each person to their associated organization and location.
+
+Example:
+Input:
+"Tim Cook is the CEO of Apple in California. Sundar Pichai leads Google in Mountain View."
+
+Output:
+Person: Tim Cook
+Organization: Apple
+Location: California
+Evidence: Tim Cook is the CEO of Apple in California.
+
+Person: Sundar Pichai
+Organization: Google
+Location: Mountain View
+Evidence: Sundar Pichai leads Google in Mountain View.
+
+
+3. Problem Definition
+The main problem is to extract structured information from unstructured text.
+
+Input:
+A paragraph or article written in natural language.
+
+Output:
+A structured table containing:
+- Person
+- Associated organization
+- Associated location
+- Evidence sentence
+
+The project uses Named Entity Recognition to detect entities, then applies simple rule-based logic to connect people with organizations and locations.
+
+
+4. Why This Project Uses NER
+Named Entity Recognition is the core technique of this project.
+
+NER is used to identify words or phrases that represent real-world entities, such as:
+- PER: Person
+- ORG: Organization
+- LOC: Location
+
+For example:
+"Tim Cook works at Apple in California."
+
+NER result:
+- Tim Cook = PERSON
+- Apple = ORGANIZATION
+- California = LOCATION
+
+After this, the app uses relationship mapping rules to connect the entities.
+
+
+5. Dataset Choice
+The recommended dataset is WikiANN.
+
+WikiANN is suitable because it supports multilingual Named Entity Recognition and contains the main entity types needed for this project:
+- PER / Person
+- ORG / Organization
+- LOC / Location
+
+Why WikiANN is a good choice:
+- It matches the project labels directly
+- It is easier to use than many larger datasets
+- It supports many languages
+- It is suitable for training a basic NER model
+
+Limitation of WikiANN:
+WikiANN can detect entities, but it does not directly provide relationship labels. This means it can identify Person, Organization, and Location, but it does not directly teach the model which person belongs to which organization.
+
+Because of that, the relationship mapping part should be handled using rule-based logic or a separate relation extraction method.
+
+
+6. Other Possible Datasets
+1. CoNLL-2003
+- Good for English NER
+- Contains PER, ORG, LOC, and MISC labels
+- Useful as a baseline dataset
+
+2. OntoNotes 5.0
+- Larger and richer dataset
+- Contains more entity types
+- More difficult to use
+
+3. VLSP Vietnamese NER Dataset
+- Better option if the project focuses on Vietnamese text
+- Contains Vietnamese named entities
+- Useful for Vietnamese NER tasks
+
+4. TACRED / DocRED
+- Relation extraction datasets
+- Useful if the project wants to train a model to detect relationships
+- Harder than WikiANN and may be too advanced for a simple student project
+
+
+7. Recommended Model
+For WikiANN:
+- mBERT
+- XLM-RoBERTa
+
+For Vietnamese-focused NER:
+- PhoBERT
+- XLM-RoBERTa
+
+Recommended simple choice:
+Use XLM-RoBERTa or mBERT for token classification on WikiANN.
+
+
+8. System Pipeline
+Step 1: User inputs text
+The user pastes a paragraph into the app.
+
+Step 2: Text preprocessing
+The text is cleaned and split into sentences.
+
+Step 3: NER prediction
+The NER model predicts entity labels for each token.
+
+Example:
+Tim Cook -> PERSON
+Apple -> ORGANIZATION
+California -> LOCATION
+
+Step 4: Entity grouping
+The system combines tokens into full entity names.
+
+Example:
+Tim + Cook -> Tim Cook
+
+Step 5: Sentence-level grouping
+The system checks which Person, Organization, and Location appear in the same sentence.
+
+Step 6: Relationship mapping
+The system applies simple rules, such as:
+- If a PERSON and ORG appear in the same sentence, associate them.
+- If a LOCATION appears in the same sentence, attach it as the related location.
+- If patterns like "CEO of", "works at", "joined", or "founded" appear, use them to improve the mapping.
+
+Step 7: Display structured output
+The app displays the final results in a table.
+
+
+9. Example Output Table
+Person | Organization | Location | Evidence
+Tim Cook | Apple | California | Tim Cook is the CEO of Apple in California.
+Sundar Pichai | Google | Mountain View | Sundar Pichai leads Google in Mountain View.
+
+
+10. Rule-Based Relationship Examples
+Basic rules:
+- PERSON + ORG in same sentence = possible affiliation
+- PERSON + LOC in same sentence = possible related location
+- ORG + LOC in same sentence = possible organization location
+
+Stronger rules:
+- PERSON is CEO of ORG
+- PERSON works at ORG
+- PERSON joined ORG
+- PERSON founded ORG
+- ORG is based in LOCATION
+- ORG is located in LOCATION
+
+
+11. Why This Project Is Good
+This project is suitable because:
+- It uses NER clearly as the main task
+- The input and output are easy to understand
+- WikiANN matches the entity labels needed
+- The app is easy to demonstrate
+- The output is more useful than just highlighting entities
+- It can be extended with relation extraction later
+
+
+12. Limitations
+The system may not always correctly map relationships.
+
+Possible problems:
+- A sentence may contain multiple people and multiple organizations
+- The correct relationship may not be obvious
+- NER only detects entities; it does not fully understand meaning
+- Rule-based mapping may fail on complex sentences
+
+Example limitation:
+"Tim Cook met Sundar Pichai at Apple headquarters in California."
+
+The system may detect:
+- Tim Cook = PERSON
+- Sundar Pichai = PERSON
+- Apple = ORGANIZATION
+- California = LOCATION
+
+But it may not know exactly which person is affiliated with Apple.
+
+
+13. Possible Improvements
+1. Add confidence scores for each detected entity.
+2. Highlight entities in the original text.
+3. Add entity frequency count.
+4. Export result as CSV or JSON.
+5. Add a graph view showing Person -> Organization -> Location.
+6. Add better relationship extraction using machine learning.
+7. Support Vietnamese text using PhoBERT or a Vietnamese NER dataset.
+
+
+14. Final Project Description
+This project builds an application that extracts named entities from user-provided text using a Named Entity Recognition model. The system identifies persons, organizations, and locations, then applies rule-based relationship mapping to associate each person with their related organization and location. The final result is displayed as a structured table, making unstructured text easier to analyze and understand.

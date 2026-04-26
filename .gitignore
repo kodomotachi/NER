@@ -42,3 +42,6 @@ reports/**/*.pdf
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Large local model files
+ner_v03/backends/app/models/saved_ner_model/model.safetensors
