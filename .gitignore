@@ -42,3 +42,69 @@ reports/**/*.pdf
 
 # Streamlit
 .streamlit/secrets.toml
+CLAUDE.md
+graphify-out/obsidian/.obsidian/graph.json
+graphify-out/GRAPH_REPORT.md
+graphify-out/.graphify_chunk_01.json
+graphify-out/cost.json
+graphify-out/graph.html
+graphify-out/manifest.json
+graphify-out/graph.json
+graphify-out/cache/0f012533be5fcb3459a4bb3da7bc957d451598acec210864f9d0e222cc67ead8.json
+graphify-out/cache/4bbf5050056d495eed437eed59f555af983e8c4853b18e6b3e969aac6a1b3e2f.json
+graphify-out/cache/9deabadf44257db557cc7b6760d0e7f5a1cf86af5e52daed63a722a6d5550b96.json
+graphify-out/cache/0518c5f992550b3ce6c4375432a9ae9090b01a54fe242ba1fde6f01e85cead57.json
+graphify-out/cache/89054675a6b12b5ed99c2b145290e501cbde2a9bc9a2a3a9c88ad3f46dbab2cb.json
+graphify-out/cache/a7ec396b45b57cba21af8407edcf9f9d9bb2ff174744bf10435ba4401bd29c28.json
+graphify-out/cache/a9b2f7026194a14614df0dbbe18550103a51ee90b3d014427d00978d22b01f3e.json
+graphify-out/cache/b2ab2bd7c02c89e3f724ddf4dab904ca9a21744ea62c8762e272ef9a87f410eb.json
+graphify-out/cache/d4277b696c2fe8ece43022016d6ad90f3230184500270f8c4320a827381412ae.json
+graphify-out/cache/db14c1fc5fa38983f0c75117016f41e2a7c391b15826e171984b00a088355fdb.json
+graphify-out/cache/dc8f83aaca05f7b55a2db93fff739553a68005f96b48f74087400caf0c01ad01.json
+.gitignore
+graphify-out/cache/fd45ebbb1dd51522ec0530eb85d2f9408f8804cd9707fdb8add0c24d25aea193.json
+graphify-out/obsidian/__init__.py_1.md
+graphify-out/obsidian/__init__.py_2.md
+graphify-out/obsidian/__init__.py_3.md
+graphify-out/obsidian/__init__.py_4.md
+graphify-out/obsidian/__init__.py_5.md
+graphify-out/obsidian/_COMMUNITY_App Entry Point.md
+graphify-out/obsidian/_COMMUNITY_Coding Behavioral Guidelines.md
+graphify-out/obsidian/__init__.py.md
+graphify-out/obsidian/_COMMUNITY_Data Module Init.md
+graphify-out/obsidian/_COMMUNITY_Features Module Init.md
+graphify-out/obsidian/_COMMUNITY_Models Module Init.md
+graphify-out/obsidian/_COMMUNITY_Preprocessing & Tests.md
+graphify-out/obsidian/_COMMUNITY_Project Structure & Layout.md
+graphify-out/obsidian/_COMMUNITY_src Package Init.md
+graphify-out/obsidian/_COMMUNITY_Streamlit App Runtime.md
+graphify-out/obsidian/_COMMUNITY_Tests Module Init.md
+.gitignore
+graphify-out/obsidian/_COMMUNITY_Visualization Module Init.md
+graphify-out/obsidian/_COMMUNITY_Visualization Module.md
+graphify-out/obsidian/app.py Streamlit Entry Point.md
+graphify-out/obsidian/app.py.md
+graphify-out/obsidian/Behavioral Coding Guidelines.md
+graphify-out/obsidian/Cookiecutter-Style Structure.md
+graphify-out/obsidian/data Dataset Directory.md
+graphify-out/obsidian/domixi.ico Favicon.md
+graphify-out/obsidian/Editable Install (pip install -e .).md
+graphify-out/obsidian/Goal-Driven Execution.md
+graphify-out/obsidian/graph.canvas
+graphify-out/obsidian/Guideline Success Metrics.md
+graphify-out/obsidian/Intro to NLP Project.md
+graphify-out/obsidian/notebooks docs reports models references.md
+graphify-out/obsidian/preprocess_midd_csv().md
+graphify-out/obsidian/preprocess.py.md
+graphify-out/obsidian/run().md
+graphify-out/obsidian/Tradeoff Caution Over Speed.md
+graphify-out/obsidian/Think Before Coding.md
+graphify-out/obsidian/tests Testing Directory.md
+graphify-out/obsidian/Surgical Changes.md
+graphify-out/obsidian/streamlit=1.28.0 Dependency.md
+graphify-out/obsidian/streamlit_app.py.md
+graphify-out/obsidian/Streamlit UI for the Masking System app..md
+graphify-out/obsidian/Streamlit Run Instructions.md
+graphify-out/obsidian/Streamlit entrypoint. Run streamlit run app.py.md
+graphify-out/obsidian/src Source Code Directory.md
+graphify-out/obsidian/Simplicity First.md
