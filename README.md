@@ -1,24 +1,104 @@
-# Intro to NLP — project
+# Invoice NER — Masking System
 
-Cấu trúc thư mục theo hướng dẫn cookiecutter-style (data, src, notebooks, …).
+An end-to-end Named Entity Recognition pipeline for Vietnamese invoices. The system extracts text from invoice images using PaddleOCR, classifies each token into a structured entity label, and surfaces the annotated results in a Streamlit web UI for human review and correction.
 
-## Chạy ứng dụng Streamlit
+Built as an introductory NLP project, with a focus on comparing labelling approaches and iterating toward a more robust production pipeline.
 
-Từ thư mục gốc của project:
+---
+
+## Features
+
+- **OCR ingestion** — PaddleOCR 3.0 extracts text blocks and bounding boxes from invoice images (PNG / JPG)
+- **NER tagging layer** — custom token classifier maps OCR output to invoice entity labels (seller, buyer, item, quantity, unit price, total, date, tax ID, etc.)
+- **Multi-stage pipeline** — image → OCR → token segmentation → entity classification → structured JSON output
+- **Streamlit web UI** — upload an invoice, view colour-coded entity masks overlaid on the image, and correct any mislabelled tokens
+- **Reproducible project layout** — cookiecutter-style structure (data, src, notebooks, models, reports, tests)
+
+---
+
+## Tech stack
+
+| Layer | Library |
+|---|---|
+| OCR | PaddleOCR 3.0 · PaddlePaddle 3.2.0 |
+| Image processing | Pillow · NumPy · OpenCV |
+| Web UI | Streamlit ≥ 1.28 |
+| Notebooks | Jupyter |
+
+---
+
+## Quick start
 
 ```bash
+# 1. Clone
+git clone https://github.com/kodomotachi/NER.git
+cd NER
+
+# 2. Install dependencies
 pip install -r requirements.txt
+
+# 3. Run the app
 streamlit run app.py
 ```
 
-Đặt file `domixi.ico` ở thư mục gốc nếu muốn dùng làm favicon; nếu không có, app dùng emoji mặc định.
+Place `domixi.ico` in the project root if you want a custom favicon; otherwise the app uses a default emoji icon.
 
-## Cấu trúc
+---
 
-- `app.py` — điểm vào Streamlit (`streamlit run app.py`).
-- `src/` — mã nguồn (data pipeline, features, models, visualization).
-- `data/` — dữ liệu raw / interim / processed / external.
-- `notebooks/`, `docs/`, `reports/`, `models/`, `references/` — theo mục đích tên thư mục.
-- `tests/` — kiểm thử.
+## Project layout
 
-Cài đặt editable (tùy chọn): `pip install -e .`
+```
+NER/
+├── app.py                  # Streamlit entry point
+├── src/
+│   ├── data/               # Data loading and preprocessing
+│   ├── features/           # Token segmentation and feature extraction
+│   ├── models/             # NER model definitions and inference
+│   └── visualization/      # Streamlit UI (streamlit_app.py)
+├── data/
+│   ├── raw/                # Original invoice images
+│   ├── interim/            # OCR output (bounding boxes + text)
+│   └── processed/          # Labelled token datasets
+├── notebooks/              # Exploratory analysis and model experiments
+├── models/                 # Saved model weights and configs
+├── reports/                # Evaluation results and figures
+├── references/             # Papers and reference material
+├── tests/                  # Unit tests
+├── requirements.txt
+└── pyproject.toml
+```
+
+---
+
+## Entity labels
+
+| Label | Description |
+|---|---|
+| `SELLER` | Vendor name |
+| `BUYER` | Customer name |
+| `INV_DATE` | Invoice date |
+| `INV_NO` | Invoice number |
+| `TAX_ID` | Tax identification number |
+| `ITEM` | Line-item description |
+| `QTY` | Quantity |
+| `UNIT_PRICE` | Unit price |
+| `TOTAL` | Line total / grand total |
+| `O` | Outside (not an entity) |
+
+---
+
+## Roadmap
+
+- [ ] Fine-tune a transformer-based NER model (PhoBERT / mBERT) on a labelled invoice dataset
+- [ ] Add confidence scores per entity prediction
+- [ ] Export structured output to JSON / CSV
+- [ ] Support multi-page PDF invoices
+- [ ] Evaluation metrics dashboard (precision, recall, F1 per entity class)
+
+---
+
+## Notes
+
+- Currently targets Vietnamese invoices; the OCR and label schema may need adaptation for other locales.
+- PaddlePaddle 3.2.0 is pinned — other versions may have protobuf conflicts with PaddleOCR 3.0.
+- This is a learning project; model accuracy will improve as more labelled data and fine-tuning are added.
