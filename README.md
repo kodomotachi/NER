@@ -99,6 +99,6 @@ NER/
 
 ## Notes
 
-- Currently targets Vietnamese invoices; the OCR and label schema may need adaptation for other locales.
+- Currently targets invoices; the OCR and label schema may need adaptation for other locales.
 - PaddlePaddle 3.2.0 is pinned — other versions may have protobuf conflicts with PaddleOCR 3.0.
 - This is a learning project; model accuracy will improve as more labelled data and fine-tuning are added.
