@@ -1,104 +1,283 @@
-# Invoice NER — Masking System
+# Receipt OCR + NER
 
-An end-to-end Named Entity Recognition pipeline for Vietnamese invoices. The system extracts text from invoice images using PaddleOCR, classifies each token into a structured entity label, and surfaces the annotated results in a Streamlit web UI for human review and correction.
+Single-page Streamlit application and training workflow for extracting structured fields from English receipt images.
 
-Built as an introductory NLP project, with a focus on comparing labelling approaches and iterating toward a more robust production pipeline.
+The local app lets a user upload or capture a receipt image, run OCR, pass the extracted text through a fine-tuned HuggingFace token-classification model, review the extracted fields, and save the final result to SQLite.
 
----
+## What This Branch Contains
 
-## Features
+- Streamlit receipt review app in `app.py`
+- OCR support with `pytesseract` and optional `EasyOCR`
+- HuggingFace `pipeline("ner")` integration for a fine-tuned RoBERTa token-classification model
+- SQLite persistence for reviewed receipt scans
+- SROIE/invoice data preparation scripts
+- Classical sklearn baseline training
+- Deep-learning experiment notebooks for:
+  - BERT + CRF
+  - RoBERTa + CRF
+  - XLM-R + CRF
+  - Transformer + Token Classification
+  - Global Pointer
+  - BERT + Global Context
+- Colab GPU launcher notebook for full training runs
 
-- **OCR ingestion** — PaddleOCR 3.0 extracts text blocks and bounding boxes from invoice images (PNG / JPG)
-- **NER tagging layer** — custom token classifier maps OCR output to invoice entity labels (seller, buyer, item, quantity, unit price, total, date, tax ID, etc.)
-- **Multi-stage pipeline** — image → OCR → token segmentation → entity classification → structured JSON output
-- **Streamlit web UI** — upload an invoice, view colour-coded entity masks overlaid on the image, and correct any mislabelled tokens
-- **Reproducible project layout** — cookiecutter-style structure (data, src, notebooks, models, reports, tests)
+Large raw datasets, model checkpoints, processed JSONL files, and local SQLite databases are intentionally not committed.
 
----
-
-## Tech stack
-
-| Layer | Library |
-|---|---|
-| OCR | PaddleOCR 3.0 · PaddlePaddle 3.2.0 |
-| Image processing | Pillow · NumPy · OpenCV |
-| Web UI | Streamlit ≥ 1.28 |
-| Notebooks | Jupyter |
-
----
-
-## Quick start
+## Local App Quick Start
 
 ```bash
-# 1. Clone
 git clone https://github.com/kodomotachi/NER.git
 cd NER
+git checkout codex/receipt-ocr-ner-app
 
-# 2. Install dependencies
-pip install -r requirements.txt
-
-# 3. Run the app
+pip install -r requirements-streamlit.txt
 streamlit run app.py
 ```
 
-Place `domixi.ico` in the project root if you want a custom favicon; otherwise the app uses a default emoji icon.
+If you use `pytesseract`, install the system Tesseract binary too:
 
----
+```bash
+# macOS
+brew install tesseract
 
-## Project layout
-
+# Ubuntu / Colab
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
 ```
+
+## Model Path
+
+The Streamlit app expects a local HuggingFace token-classification export. The default path is:
+
+```text
+models/deep_ner/khai_roberta_token_cls/best
+```
+
+That folder should contain files such as:
+
+```text
+config.json
+model.safetensors
+tokenizer.json
+tokenizer_config.json
+vocab.json
+merges.txt
+```
+
+If your model is elsewhere, edit the path in the app sidebar or update `DEFAULT_MODEL_PATH` in `app.py`.
+
+## App Workflow
+
+1. Choose image input:
+   - upload image from machine
+   - capture image from webcam
+2. Extract raw text with OCR.
+3. Run the fine-tuned NER model.
+4. Review extracted entities.
+5. Choose or correct the total amount candidate.
+6. Save the reviewed result to SQLite.
+7. Download the extraction JSON if needed.
+
+The app deliberately asks the user to review before saving because receipt totals can be confused with subtotal, tax, cash, or change lines.
+
+## Database
+
+The app creates a local SQLite database:
+
+```text
+receipt_scans.sqlite3
+```
+
+Table:
+
+```sql
+receipt_scans(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scanned_at TEXT NOT NULL,
+    raw_ocr_text TEXT NOT NULL,
+    entities_json TEXT NOT NULL
+)
+```
+
+The database is ignored by git.
+
+## Training Data
+
+This workflow supports two dataset styles:
+
+- Synthetic invoice CSV data, usually:
+
+```text
+data/raw/invoices.csv.zip
+```
+
+- SROIE receipt dataset zip, usually:
+
+```text
+data/raw/SROIE_datasetv2.zip
+```
+
+These files are not committed. Put them under `data/raw/` before running data preparation.
+
+Prepare processed NER JSONL files:
+
+```bash
+python src/prepare_ner_data.py \
+  --dataset-a data/raw/invoices.csv.zip \
+  --dataset-b data/raw/SROIE_datasetv2.zip
+```
+
+Outputs include:
+
+```text
+data/processed/a_train.jsonl
+data/processed/a_valid.jsonl
+data/processed/a_test.jsonl
+data/processed/b_unique.jsonl
+data/processed/b_valid.jsonl
+data/processed/b_test.jsonl
+data/processed/label_map.json
+data/processed/audit_report.md
+```
+
+## Lightweight Baseline
+
+Run sklearn baselines:
+
+```bash
+python src/train_ner_sklearn.py
+```
+
+Reports are written to:
+
+```text
+reports/ner_experiment_results.md
+reports/ner_experiment_results.json
+```
+
+## Deep Learning Experiments
+
+Install deep-learning dependencies:
+
+```bash
+pip install -r requirements-deep.txt
+```
+
+Notebook order:
+
+```text
+notebooks/00_setup_and_prepare.ipynb
+notebooks/01_transformer_token_classification_khoi.ipynb
+notebooks/02_transformer_crf_models.ipynb
+notebooks/03_global_pointer_and_global_context.ipynb
+notebooks/04_select_best_model.ipynb
+```
+
+Current full-training config in the notebooks:
+
+```python
+LIMIT_TRAIN = None
+LIMIT_EVAL = None
+EPOCHS = 3
+MAX_LENGTH = 384
+```
+
+If you only want a smoke test:
+
+```python
+LIMIT_TRAIN = 64
+LIMIT_EVAL = 32
+EPOCHS = 1
+MAX_LENGTH = 192
+```
+
+## Colab GPU Workflow
+
+For full model comparison, use Colab GPU rather than a fanless laptop.
+
+1. Upload this project folder to Google Drive using the folder name expected by the launcher:
+
+```text
+MyDrive/NLP-test
+```
+
+2. Make sure raw dataset files exist:
+
+```text
+MyDrive/NLP-test/data/raw/invoices.csv.zip
+MyDrive/NLP-test/data/raw/SROIE_datasetv2.zip
+```
+
+3. Open:
+
+```text
+notebooks/COLAB_GPU_LAUNCHER.ipynb
+```
+
+4. Set Colab runtime:
+
+```text
+Runtime > Change runtime type > GPU
+```
+
+5. Run the launcher cells from top to bottom.
+
+The launcher copies the project from Drive to `/content/NLP-test`, trains locally in Colab runtime to avoid Google Drive mount instability, then syncs results back to Drive.
+
+See `COLAB_GPU_GUIDE.md` for more detail.
+
+## Project Layout
+
+```text
 NER/
-├── app.py                  # Streamlit entry point
-├── src/
-│   ├── data/               # Data loading and preprocessing
-│   ├── features/           # Token segmentation and feature extraction
-│   ├── models/             # NER model definitions and inference
-│   └── visualization/      # Streamlit UI (streamlit_app.py)
+├── app.py
+├── COLAB_GPU_GUIDE.md
+├── README.md
+├── README_NER.md
+├── requirements-streamlit.txt
+├── requirements-deep.txt
 ├── data/
-│   ├── raw/                # Original invoice images
-│   ├── interim/            # OCR output (bounding boxes + text)
-│   └── processed/          # Labelled token datasets
-├── notebooks/              # Exploratory analysis and model experiments
-├── models/                 # Saved model weights and configs
-├── reports/                # Evaluation results and figures
-├── references/             # Papers and reference material
-├── tests/                  # Unit tests
-├── requirements.txt
-└── pyproject.toml
+│   ├── raw/
+│   └── processed/
+├── models/
+│   └── deep_ner/
+├── notebooks/
+│   ├── 00_setup_and_prepare.ipynb
+│   ├── 01_transformer_token_classification_khoi.ipynb
+│   ├── 02_transformer_crf_models.ipynb
+│   ├── 03_global_pointer_and_global_context.ipynb
+│   ├── 04_select_best_model.ipynb
+│   └── COLAB_GPU_LAUNCHER.ipynb
+├── src/
+│   ├── prepare_ner_data.py
+│   ├── train_ner_sklearn.py
+│   └── deep_ner_models.py
+└── reports/
 ```
 
----
+## Entity Labels
 
-## Entity labels
+SROIE receipt fields are mapped to:
 
-| Label | Description |
+| Source field | NER label |
 |---|---|
-| `SELLER` | Vendor name |
-| `BUYER` | Customer name |
-| `INV_DATE` | Invoice date |
-| `INV_NO` | Invoice number |
-| `TAX_ID` | Tax identification number |
-| `ITEM` | Line-item description |
-| `QTY` | Quantity |
-| `UNIT_PRICE` | Unit price |
-| `TOTAL` | Line total / grand total |
-| `O` | Outside (not an entity) |
+| `company` | `COMPANY` |
+| `address` | `ADDRESS` |
+| `date` | `DATE` |
+| `total` | `TOTAL` |
 
----
+The Streamlit app normalizes these labels into user-facing fields:
 
-## Roadmap
-
-- [ ] Fine-tune a transformer-based NER model (PhoBERT / mBERT) on a labelled invoice dataset
-- [ ] Add confidence scores per entity prediction
-- [ ] Export structured output to JSON / CSV
-- [ ] Support multi-page PDF invoices
-- [ ] Evaluation metrics dashboard (precision, recall, F1 per entity class)
-
----
+```text
+vendor
+address
+date
+total
+```
 
 ## Notes
 
-- Currently targets invoices; the OCR and label schema may need adaptation for other locales.
-- PaddlePaddle 3.2.0 is pinned — other versions may have protobuf conflicts with PaddleOCR 3.0.
-- This is a learning project; model accuracy will improve as more labelled data and fine-tuning are added.
+- The app works best on receipt images similar to SROIE.
+- OCR quality strongly affects NER quality.
+- The total amount is post-processed and user-reviewable because receipt OCR often confuses total, subtotal, tax, cash, and change lines.
+- Model weights and raw datasets are intentionally excluded from git. Store them locally or in external storage.
