@@ -1,0 +1,8 @@
+streamlit
+transformers
+torch
+pillow
+pandas
+numpy
+pytesseract
+easyocr

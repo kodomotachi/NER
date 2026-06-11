@@ -1,4 +1,581 @@
-"""Streamlit entrypoint. Run: streamlit run app.py"""
-from src.visualization.streamlit_app import run
+"""Streamlit receipt OCR + NER extraction app.
 
-run()
+Run:
+    streamlit run app.py
+
+Notes:
+    - Install the Tesseract binary separately if you use pytesseract.
+      macOS:  brew install tesseract
+      Ubuntu: apt-get install -y tesseract-ocr
+    - Put your fine-tuned HuggingFace token-classification model in the path
+      configured by DEFAULT_MODEL_PATH, or change it in the sidebar.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import re
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import streamlit as st
+from PIL import Image, ImageOps
+from transformers import pipeline
+
+
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = APP_DIR / "receipt_scans.sqlite3"
+DEFAULT_MODEL_PATH = APP_DIR / "models" / "deep_ner" / "khai_roberta_token_cls" / "best"
+REQUIRED_MODEL_FILES = ("config.json",)
+
+
+def init_db(db_path: Path = DB_PATH) -> None:
+    """Create the SQLite table if it does not already exist."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS receipt_scans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scanned_at TEXT NOT NULL,
+                raw_ocr_text TEXT NOT NULL,
+                entities_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
+def save_scan(raw_text: str, entities: dict[str, Any], db_path: Path = DB_PATH) -> int:
+    """Persist one receipt scan and return the inserted row id."""
+    scanned_at = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO receipt_scans (scanned_at, raw_ocr_text, entities_json)
+            VALUES (?, ?, ?)
+            """,
+            (scanned_at, raw_text, json.dumps(entities, ensure_ascii=False)),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
+
+
+def load_recent_scans(limit: int = 10, db_path: Path = DB_PATH) -> pd.DataFrame:
+    """Load recent database rows for display in the app."""
+    with sqlite3.connect(db_path) as conn:
+        return pd.read_sql_query(
+            """
+            SELECT id, scanned_at, entities_json
+            FROM receipt_scans
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            conn,
+            params=(limit,),
+        )
+
+
+def clear_scans(db_path: Path = DB_PATH) -> None:
+    """Delete all saved scans from the local SQLite database."""
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DELETE FROM receipt_scans")
+        conn.commit()
+
+
+def image_from_streamlit_upload(uploaded_file: Any) -> Image.Image:
+    """Convert Streamlit camera/file input into a PIL image."""
+    image_bytes = uploaded_file.getvalue()
+    image = Image.open(io.BytesIO(image_bytes))
+    return ImageOps.exif_transpose(image).convert("RGB")
+
+
+def preprocess_for_ocr(image: Image.Image) -> Image.Image:
+    """Apply light preprocessing that usually helps receipt OCR."""
+    grayscale = ImageOps.grayscale(image)
+    # Upscale small webcam captures. Tesseract generally likes larger text.
+    width, height = grayscale.size
+    if max(width, height) < 1600:
+        scale = 1600 / max(width, height)
+        grayscale = grayscale.resize((int(width * scale), int(height * scale)))
+    return grayscale
+
+
+def extract_text_with_ocr(image: Image.Image, engine: str = "pytesseract") -> str:
+    """Extract raw English text from a receipt image."""
+    processed = preprocess_for_ocr(image)
+
+    if engine == "easyocr":
+        import numpy as np
+
+        reader = load_easyocr_reader()
+        lines = reader.readtext(np.array(processed), detail=0, paragraph=True)
+        return "\n".join(line.strip() for line in lines if line.strip())
+
+    import pytesseract
+
+    config = "--oem 3 --psm 6 -l eng"
+    return pytesseract.image_to_string(processed, config=config).strip()
+
+
+@st.cache_resource(show_spinner="Loading EasyOCR reader...")
+def load_easyocr_reader():
+    """Load EasyOCR once; it is expensive to initialize repeatedly."""
+    import easyocr
+
+    return easyocr.Reader(["en"], gpu=False)
+
+
+@st.cache_resource(show_spinner="Loading NER model...")
+def load_ner_pipeline(model_path: str):
+    """Load a local HuggingFace token-classification model once per session."""
+    model_path = str(Path(model_path).expanduser().resolve())
+    return pipeline(
+        "ner",
+        model=model_path,
+        tokenizer=model_path,
+        aggregation_strategy="simple",
+    )
+
+
+def validate_model_path(model_path: str) -> tuple[bool, str]:
+    """Return whether a local HuggingFace model folder looks loadable."""
+    path = Path(model_path).expanduser()
+    if not path.exists():
+        return False, f"Model folder does not exist: {path}"
+    if not path.is_dir():
+        return False, f"Model path is not a folder: {path}"
+    missing = [name for name in REQUIRED_MODEL_FILES if not (path / name).exists()]
+    has_weight = any((path / name).exists() for name in ("model.safetensors", "pytorch_model.bin"))
+    has_tokenizer = any((path / name).exists() for name in ("tokenizer.json", "vocab.json", "vocab.txt"))
+    if missing:
+        return False, f"Model folder is missing required file(s): {', '.join(missing)}"
+    if not has_weight:
+        return False, "Model folder is missing weights: model.safetensors or pytorch_model.bin"
+    if not has_tokenizer:
+        return False, "Model folder is missing tokenizer files."
+    return True, ""
+
+
+def normalize_label(label: str) -> str:
+    """Normalize common label names from token-classification outputs."""
+    label = label.upper().replace("B-", "").replace("I-", "")
+    aliases = {
+        "COMPANY": "vendor",
+        "VENDOR": "vendor",
+        "MERCHANT": "vendor",
+        "STORE": "vendor",
+        "TOTAL": "total",
+        "AMOUNT": "total",
+        "DATE": "date",
+        "INVOICE_DATE": "date",
+        "ADDRESS": "address",
+    }
+    return aliases.get(label, label.lower())
+
+
+def clean_entity_text(text: str) -> str:
+    """Clean HuggingFace subword spacing artifacts."""
+    return (
+        text.replace(" ##", "")
+        .replace("Ġ", " ")
+        .replace("▁", " ")
+        .replace(" ,", ",")
+        .replace(" .", ".")
+        .replace(" :", ":")
+        .strip()
+    )
+
+
+def parse_ner_entities(ner_output: list[dict[str, Any]]) -> dict[str, Any]:
+    """Convert pipeline output into a compact receipt entity dictionary."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for item in ner_output:
+        label = normalize_label(str(item.get("entity_group") or item.get("entity") or "unknown"))
+        value = clean_entity_text(str(item.get("word", "")))
+        if not value:
+            continue
+        grouped.setdefault(label, []).append(
+            {
+                "text": value,
+                "confidence": round(float(item.get("score", 0.0)), 4),
+                "start": item.get("start"),
+                "end": item.get("end"),
+            }
+        )
+
+    structured: dict[str, Any] = {}
+    for label, candidates in grouped.items():
+        best = max(candidates, key=lambda candidate: candidate["confidence"])
+        structured[label] = best["text"]
+        structured[f"{label}_confidence"] = best["confidence"]
+        structured[f"{label}_candidates"] = candidates
+
+    return structured
+
+
+def normalize_amount_text(value: str) -> str:
+    """Normalize OCR amount strings such as RM32,69 or 32 69 into 32.69."""
+    value = value.upper().replace("RM", "").replace("$", "").strip()
+    value = re.sub(r"[^\d.,]", "", value)
+    if "," in value and "." in value:
+        value = value.replace(",", "")
+    if "," in value and "." not in value:
+        value = value.replace(",", ".")
+    return value
+
+
+def amount_to_float(value: str) -> float | None:
+    """Convert a normalized amount string to float for ranking/filtering."""
+    try:
+        return float(normalize_amount_text(value))
+    except ValueError:
+        return None
+
+
+def amount_score(line: str) -> int:
+    """Rank receipt lines that are likely to contain the final payable total."""
+    lower = line.lower()
+    score = 0
+    if "grand total" in lower or "net total" in lower or "nett total" in lower:
+        score += 8
+    if "amount due" in lower or "balance due" in lower or "total due" in lower:
+        score += 7
+    if "payable" in lower:
+        score += 6
+    if "grand" in lower:
+        score += 5
+    if "total" in lower:
+        score += 4
+    if "amount" in lower:
+        score += 2
+    if "incl" in lower or "including" in lower:
+        score += 1
+    if "excluding" in lower:
+        score -= 5
+    if "subtotal" in lower or "sub total" in lower:
+        score -= 4
+    if "sales" in lower:
+        score -= 3
+    if "cash" in lower or "change" in lower or "tender" in lower or "paid" in lower:
+        score -= 4
+    if "tax" in lower or "gst" in lower or "vat" in lower:
+        score -= 2
+    if "discount" in lower or "round" in lower:
+        score -= 3
+    if "price" in lower or "s/price" in lower:
+        score -= 3
+    if "qty" in lower or "quantity" in lower:
+        score -= 1 if "total" in lower else 3
+    return score
+
+
+def extract_total_candidates_from_ocr(raw_text: str) -> list[dict[str, Any]]:
+    """Find and score likely receipt total amounts from OCR text."""
+    decimal_pattern = re.compile(
+        r"(?<![\d/])(?:RM|MYR|\$)?\s*((?:\d{1,3}(?:,\d{3})+|\d{1,6})[.,]\d{2})(?![\d/])",
+        re.IGNORECASE,
+    )
+    candidates: list[dict[str, Any]] = []
+
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    for line_index, line in enumerate(lines):
+        base_score = amount_score(line)
+        for match in decimal_pattern.finditer(line):
+            amount = normalize_amount_text(match.group(1))
+            amount_value = amount_to_float(amount)
+            if amount_value is None or amount_value <= 0:
+                continue
+            score = base_score + 3
+            # Final totals are often near the lower half of receipts.
+            score += int(3 * (line_index / max(len(lines), 1)))
+            candidates.append(
+                {
+                    "amount": amount,
+                    "score": score,
+                    "line_number": line_index + 1,
+                    "line": line,
+                    "source": "same_line_decimal",
+                }
+            )
+        # Fallback for OCR that separates cents with a space: "32 69".
+        spaced = None if decimal_pattern.search(line) else re.search(r"(?<!\d)(\d{1,6})\s+(\d{2})(?!\d)", line)
+        if spaced:
+            amount = f"{spaced.group(1)}.{spaced.group(2)}"
+            amount_value = amount_to_float(amount)
+            if amount_value and amount_value > 0:
+                candidates.append(
+                    {
+                        "amount": amount,
+                        "score": base_score + 2,
+                        "line_number": line_index + 1,
+                        "line": line,
+                        "source": "same_line_spaced_decimal",
+                    }
+                )
+
+        # Some OCR outputs put the label and amount on adjacent lines.
+        if base_score > 2 and not decimal_pattern.search(line):
+            for offset, next_line in enumerate(lines[line_index + 1 : line_index + 3], start=1):
+                for match in decimal_pattern.finditer(next_line):
+                    amount = normalize_amount_text(match.group(1))
+                    amount_value = amount_to_float(amount)
+                    if amount_value is None or amount_value <= 0:
+                        continue
+                    candidates.append(
+                        {
+                            "amount": amount,
+                            "score": base_score + 2 - offset,
+                            "line_number": line_index + 1 + offset,
+                            "line": next_line,
+                            "source": f"near_total_label_plus_{offset}",
+                        }
+                    )
+
+    if candidates:
+        best_by_amount: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            current = best_by_amount.get(candidate["amount"])
+            if current is None or (candidate["score"], candidate["line_number"]) > (current["score"], current["line_number"]):
+                best_by_amount[candidate["amount"]] = candidate
+        return sorted(best_by_amount.values(), key=lambda item: (item["score"], item["line_number"]), reverse=True)
+
+    # Last resort: choose the last decimal-looking amount in the whole OCR text.
+    all_decimals = []
+    for line_index, line in enumerate(lines):
+        for match in decimal_pattern.finditer(line):
+            amount = normalize_amount_text(match.group(1))
+            if amount_to_float(amount):
+                all_decimals.append(
+                    {
+                        "amount": amount,
+                        "score": 0,
+                        "line_number": line_index + 1,
+                        "line": line,
+                        "source": "last_decimal_fallback",
+                    }
+                )
+    return all_decimals[-5:][::-1]
+
+
+def extract_decimal_total_from_ocr(raw_text: str) -> str | None:
+    """Find the best decimal total from OCR text."""
+    candidates = extract_total_candidates_from_ocr(raw_text)
+    return candidates[0]["amount"] if candidates else None
+
+
+def enhance_receipt_entities(raw_text: str, entities: dict[str, Any]) -> dict[str, Any]:
+    """Patch common receipt extraction issues after NER, especially decimal totals."""
+    enhanced = dict(entities)
+    total_candidates = extract_total_candidates_from_ocr(raw_text)
+    decimal_total = total_candidates[0]["amount"] if total_candidates else None
+    current_total = str(enhanced.get("total", "")).strip()
+
+    if decimal_total and (not current_total or "." not in current_total or len(decimal_total) > len(current_total)):
+        enhanced["total"] = decimal_total
+        enhanced["total_source"] = "ocr_regex"
+        enhanced["total_confidence"] = max(float(enhanced.get("total_confidence", 0.0) or 0.0), 0.99)
+    elif current_total:
+        enhanced["total"] = normalize_amount_text(current_total) or current_total
+    if total_candidates:
+        enhanced["total_ocr_candidates"] = total_candidates
+
+    return enhanced
+
+
+def entity_summary_rows(entities: dict[str, Any]) -> list[dict[str, Any]]:
+    """Convert structured entity dict into display rows."""
+    rows = []
+    for key, value in entities.items():
+        if key.endswith("_candidates") or key.endswith("_confidence") or key.endswith("_source"):
+            continue
+        confidence = entities.get(f"{key}_confidence")
+        rows.append({"entity": key, "value": value, "confidence": confidence})
+    return rows
+
+
+def make_result_payload(raw_text: str, entities: dict[str, Any]) -> str:
+    """Build a downloadable JSON result."""
+    return json.dumps(
+        {
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "raw_ocr_text": raw_text,
+            "entities": entities,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def main() -> None:
+    st.set_page_config(page_title="Receipt OCR + NER", page_icon="🧾", layout="wide")
+    init_db()
+
+    st.title("Receipt OCR + NER Extractor")
+    st.caption("Capture an English receipt, extract OCR text, run your RoBERTa NER model, and save entities to SQLite.")
+
+    with st.sidebar:
+        st.header("Settings")
+        model_path = st.text_input("HuggingFace model path", value=str(DEFAULT_MODEL_PATH))
+        ocr_engine = st.selectbox("OCR engine", ["pytesseract", "easyocr"], index=0)
+        save_to_db = st.toggle("Save processed receipts", value=True)
+        show_raw_ner = st.toggle("Show raw NER output", value=False)
+
+        is_valid_model, model_error = validate_model_path(model_path)
+        if is_valid_model:
+            st.success("NER model folder looks valid.")
+        else:
+            st.warning(model_error)
+            st.caption("Expected default:")
+            st.code(str(DEFAULT_MODEL_PATH), language="text")
+
+        st.divider()
+        st.markdown("**Tips**")
+        st.caption("Use a flat, bright, uncropped receipt image. SROIE-like scanned receipts work best with this model.")
+
+    left, right = st.columns([1, 1])
+
+    with left:
+        st.subheader("1. Choose Receipt Image")
+        input_mode = st.radio("Image source", ["Upload image", "Camera"], horizontal=True)
+        captured_image = None
+        if input_mode == "Upload image":
+            captured_image = st.file_uploader(
+                "Upload receipt image",
+                type=["png", "jpg", "jpeg", "webp"],
+                accept_multiple_files=False,
+            )
+        else:
+            captured_image = st.camera_input("Capture receipt photo")
+
+        process_clicked = False
+        if captured_image is not None:
+            caption = "Uploaded receipt" if input_mode == "Upload image" else "Captured receipt"
+            st.image(captured_image, caption=caption, use_container_width=True)
+            process_clicked = st.button("Process Receipt", type="primary")
+        else:
+            st.info("Upload a receipt image or switch to Camera to take a photo.")
+
+    with right:
+        st.subheader("2. Review Extraction")
+        if captured_image is None:
+            st.write("Waiting for receipt image.")
+
+        if captured_image is not None and process_clicked:
+            image = image_from_streamlit_upload(captured_image)
+
+            with st.spinner("Extracting text with OCR..."):
+                try:
+                    raw_text = extract_text_with_ocr(image, engine=ocr_engine)
+                except Exception as exc:
+                    st.error("OCR failed. Try switching OCR engine in the sidebar or use a clearer image.")
+                    st.exception(exc)
+                    return
+
+            if not raw_text:
+                st.error("OCR did not detect any text. Try a clearer, brighter photo.")
+                return
+
+            with st.spinner("Running receipt NER model..."):
+                if not is_valid_model:
+                    st.error(model_error)
+                    st.code(str(DEFAULT_MODEL_PATH), language="text")
+                    return
+                try:
+                    ner = load_ner_pipeline(model_path)
+                    ner_output = ner(raw_text)
+                    entities = enhance_receipt_entities(raw_text, parse_ner_entities(ner_output))
+                except Exception as exc:
+                    st.error("Could not load or run the NER model. Check that the model path points to a HuggingFace token-classification export.")
+                    st.exception(exc)
+                    return
+
+            st.session_state["last_receipt_result"] = {
+                "raw_text": raw_text,
+                "entities": entities,
+                "ner_output": ner_output,
+            }
+            st.success("Receipt processed. Review the extracted fields before saving.")
+
+        if "last_receipt_result" in st.session_state:
+            result = st.session_state["last_receipt_result"]
+            raw_text = result["raw_text"]
+            entities = dict(result["entities"])
+            ner_output = result["ner_output"]
+
+            st.metric("OCR characters", len(raw_text))
+            with st.expander("Raw OCR text", expanded=False):
+                st.text_area("OCR output", raw_text, height=220, label_visibility="collapsed", key="review_raw_ocr_text")
+
+            total_candidates = entities.get("total_ocr_candidates", [])
+            if total_candidates:
+                candidate_options = [
+                    f"{item['amount']} | score={item['score']} | line {item['line_number']}: {item['line']}"
+                    for item in total_candidates[:8]
+                ]
+                with st.expander("Total amount candidates from OCR", expanded=True):
+                    selected_candidate = st.selectbox("Choose the correct total candidate", candidate_options)
+                    selected_amount = selected_candidate.split("|", 1)[0].strip()
+                    if selected_amount:
+                        entities["total"] = selected_amount
+                        entities["total_source"] = "user_selected_ocr_candidate"
+
+            reviewed_total = st.text_input("Review total before saving", value=str(entities.get("total", "")))
+            if reviewed_total:
+                normalized_reviewed_total = normalize_amount_text(reviewed_total) or reviewed_total
+                if normalized_reviewed_total != entities.get("total"):
+                    entities["total"] = normalized_reviewed_total
+                    entities["total_source"] = "user_review"
+                    entities["total_confidence"] = 1.0
+
+            rows = entity_summary_rows(entities)
+            if rows:
+                st.write("Extracted entities")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            else:
+                st.warning("No entities were extracted. OCR text may be noisy or the receipt layout may differ from training data.")
+
+            with st.expander("Structured JSON"):
+                st.json(entities)
+
+            if show_raw_ner:
+                with st.expander("Raw HuggingFace NER output", expanded=False):
+                    st.json(ner_output)
+
+            if save_to_db:
+                if st.button("Save reviewed result", type="primary"):
+                    scan_id = save_scan(raw_text, entities)
+                    st.success(f"Reviewed receipt saved. Scan ID: {scan_id}")
+                    st.session_state["last_receipt_result"]["entities"] = entities
+            else:
+                st.info("Saving is disabled in the sidebar.")
+
+            st.download_button(
+                "Download extraction JSON",
+                data=make_result_payload(raw_text, entities),
+                file_name="receipt_extraction.json",
+                mime="application/json",
+            )
+
+    st.divider()
+    st.subheader("Recent scans")
+    history_limit = st.slider("History rows", min_value=5, max_value=50, value=10, step=5)
+    clear_clicked = st.button("Clear saved scans")
+    if clear_clicked:
+        clear_scans()
+        st.success("Saved scans cleared.")
+
+    recent = load_recent_scans(limit=history_limit)
+    if recent.empty:
+        st.write("No scans saved yet.")
+    else:
+        recent["entities"] = recent["entities_json"].map(json.loads)
+        recent["summary"] = recent["entities"].map(lambda item: {key: value for key, value in item.items() if not key.endswith("_candidates") and not key.endswith("_confidence")})
+        st.dataframe(recent[["id", "scanned_at", "summary"]], use_container_width=True, hide_index=True)
+
+
+if __name__ == "__main__":
+    main()
