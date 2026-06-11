@@ -150,6 +150,28 @@ reports/ner_experiment_results.md
 reports/ner_experiment_results.json
 ```
 
+## Receipt Pipeline Evaluation
+
+Evaluate the Streamlit-style receipt extraction pipeline on SROIE:
+
+```bash
+PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True \
+python src/evaluate_receipt_dataset.py --text-limit 100 --image-limit 10
+```
+
+The evaluation compares extracted `vendor`, `address`, `date`, and `total` fields against SROIE ground truth in two modes:
+
+- `dataset_text`: dataset-provided OCR text -> NER -> post-processing
+- `image_paddleocr`: receipt image -> PaddleOCR -> NER -> post-processing
+
+Reports are written to:
+
+```text
+reports/sroie_receipt_evaluation.md
+reports/sroie_receipt_evaluation.json
+reports/sroie_receipt_predictions.csv
+```
+
 ## Deep Learning Experiments
 
 Install deep-learning dependencies:

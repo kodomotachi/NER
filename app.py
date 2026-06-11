@@ -314,6 +314,183 @@ def normalize_amount_text(value: str) -> str:
     return value
 
 
+def normalize_receipt_text(value: str) -> str:
+    """Normalize receipt text for lightweight rule matching."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def clean_receipt_field(value: str) -> str:
+    """Remove noisy spacing while preserving receipt punctuation."""
+    value = normalize_receipt_text(value)
+    value = re.sub(r"\s+([,.:;/])", r"\1", value)
+    value = re.sub(r"([,.:;/])(?=\S)", r"\1 ", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip(" ,;:")
+
+
+def extract_date_from_ocr(raw_text: str) -> str | None:
+    """Extract a complete receipt date, preferring dates near a DATE label."""
+    patterns = [
+        re.compile(r"\b(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})\b"),
+        re.compile(r"\b(\d{4}[./-]\d{1,2}[./-]\d{1,2})\b"),
+        re.compile(r"\b(\d{1,2}\s+(?:JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC)[A-Z]*\s+\d{2,4})\b", re.IGNORECASE),
+    ]
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    candidates: list[tuple[int, int, str]] = []
+    for line_index, line in enumerate(lines):
+        lower = line.lower()
+        score = 4 if "date" in lower or "invoice date" in lower else 0
+        for pattern in patterns:
+            for match in pattern.finditer(line):
+                candidates.append((score, -line_index, match.group(1)))
+        if ("date" in lower or "invoice date" in lower) and not any(pattern.search(line) for pattern in patterns):
+            for offset, next_line in enumerate(lines[line_index + 1 : line_index + 3], start=1):
+                for pattern in patterns:
+                    match = pattern.search(next_line)
+                    if match:
+                        candidates.append((score + 3 - offset, -(line_index + offset), match.group(1)))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[:2])[2]
+
+
+def is_address_noise_line(line: str) -> bool:
+    """Return True for header/contact/product lines that should not be merchant address."""
+    lower = line.lower().strip()
+    if not lower:
+        return True
+    noise_markers = [
+        "roc",
+        "reg no",
+        "company no",
+        "gst",
+        "sst",
+        "tax invoice",
+        "invoice",
+        "receipt",
+        "cash bill",
+        "tel",
+        "fax",
+        "email",
+        "date",
+        "time",
+        "cashier",
+        "sales",
+        "description",
+        "item",
+        "qty",
+        "price",
+        "amount",
+        "bill to",
+        "customer",
+        "approval",
+    ]
+    return any(marker in lower for marker in noise_markers)
+
+
+def looks_like_address_start(line: str) -> bool:
+    """Detect a line that likely starts a merchant address."""
+    upper = line.upper()
+    start_patterns = [
+        r"^\s*(NO\.?|LOT|LEVEL|L\d+|UNIT|SUITE|KM|JALAN|JLN|PLOT|BLOCK|BLOK)\b",
+        r"^\s*\d+[A-Z]?\s*,?\s*(JALAN|JLN|LORONG|PERSIARAN|ROAD|STREET|TAMAN)\b",
+    ]
+    if any(re.search(pattern, upper) for pattern in start_patterns):
+        return True
+    address_keywords = [
+        "JALAN",
+        "JLN",
+        "LORONG",
+        "PERSIARAN",
+        "TAMAN",
+        "BANDAR",
+        "KAMPUNG",
+        "KG ",
+        "SELANGOR",
+        "JOHOR",
+        "KUALA",
+        "PETALING",
+        "SUNGAI",
+        "MALAYSIA",
+        "RAYA",
+        "UTARA",
+        "SELATAN",
+    ]
+    return bool(re.search(r"\b\d{5}\b", upper)) or any(keyword in upper for keyword in address_keywords)
+
+
+def looks_like_address_continuation(line: str) -> bool:
+    """Detect continuation lines after an address has started."""
+    if is_address_noise_line(line):
+        return False
+    if looks_like_address_start(line):
+        return True
+    upper = line.upper()
+    if re.search(r"\b\d{5}\b", upper):
+        return True
+    if any(state in upper for state in ("SELANGOR", "JOHOR", "KEDAH", "PENANG", "PERAK", "PAHANG", "MELAKA", "SABAH", "SARAWAK")):
+        return True
+    continuation_keywords = (
+        "BANDAR",
+        "TAMAN",
+        "KAMPUNG",
+        "KG ",
+        "JAYA",
+        "BAHRU",
+        "UTARA",
+        "SELATAN",
+        "LAMA",
+        "KALI",
+        "KLANG",
+        "MASAI",
+        "RAJA",
+    )
+    return any(keyword in upper for keyword in continuation_keywords)
+
+
+def address_quality_score(value: str) -> int:
+    """Score whether an extracted address looks complete and low-noise."""
+    text = normalize_receipt_text(value).upper()
+    score = 0
+    score += 3 if re.search(r"\b\d{5}\b", text) else 0
+    score += 2 if re.search(r"\b(NO\.?|LOT|LEVEL|KM|JALAN|JLN)\b", text) else 0
+    score += sum(1 for keyword in ("JALAN", "BANDAR", "TAMAN", "SELANGOR", "JOHOR", "KUALA", "PETALING") if keyword in text)
+    score -= 3 * sum(1 for keyword in ("FORMERLY", "LICENSEE", "RESTAURANTS SDN BHD", "ROC", "GST", "TEL", "FAX", "EMAIL") if keyword in text)
+    return score
+
+
+def extract_merchant_address_from_ocr(raw_text: str) -> str | None:
+    """Extract likely merchant address from the receipt header area."""
+    lines = [clean_receipt_field(line) for line in raw_text.splitlines() if clean_receipt_field(line)]
+    if not lines:
+        return None
+
+    stop_index = len(lines)
+    for index, line in enumerate(lines):
+        lower = line.lower()
+        if index > 1 and any(marker in lower for marker in ("tax invoice", "invoice no", "receipt", "cash bill", "date:", "cashier", "description")):
+            stop_index = index
+            break
+
+    header_lines = lines[:stop_index]
+    best: list[str] = []
+    for index, line in enumerate(header_lines):
+        if is_address_noise_line(line) or not looks_like_address_start(line):
+            continue
+        candidate = [line]
+        for next_line in header_lines[index + 1 : index + 6]:
+            if looks_like_address_continuation(next_line):
+                candidate.append(next_line)
+            else:
+                break
+        if len(" ".join(candidate)) > len(" ".join(best)):
+            best = candidate
+
+    if not best:
+        return None
+    return clean_receipt_field(", ".join(best))
+
+
 def amount_to_float(value: str) -> float | None:
     """Convert a normalized amount string to float for ranking/filtering."""
     try:
@@ -456,6 +633,25 @@ def extract_decimal_total_from_ocr(raw_text: str) -> str | None:
 def enhance_receipt_entities(raw_text: str, entities: dict[str, Any]) -> dict[str, Any]:
     """Patch common receipt extraction issues after NER, especially decimal totals."""
     enhanced = dict(entities)
+
+    date_from_ocr = extract_date_from_ocr(raw_text)
+    if date_from_ocr:
+        current_date = normalize_receipt_text(str(enhanced.get("date", "")))
+        if not current_date or len(date_from_ocr) > len(current_date):
+            enhanced["date"] = date_from_ocr
+            enhanced["date_source"] = "ocr_regex"
+            enhanced["date_confidence"] = max(float(enhanced.get("date_confidence", 0.0) or 0.0), 0.99)
+
+    address_from_ocr = extract_merchant_address_from_ocr(raw_text)
+    if address_from_ocr:
+        current_address = normalize_receipt_text(str(enhanced.get("address", "")))
+        current_score = address_quality_score(current_address)
+        ocr_score = address_quality_score(address_from_ocr)
+        if not current_address or ocr_score >= current_score or len(address_from_ocr) >= max(20, int(len(current_address) * 0.85)):
+            enhanced["address"] = address_from_ocr
+            enhanced["address_source"] = "ocr_header_rule"
+            enhanced["address_confidence"] = max(float(enhanced.get("address_confidence", 0.0) or 0.0), 0.95)
+
     total_candidates = extract_total_candidates_from_ocr(raw_text)
     decimal_total = total_candidates[0]["amount"] if total_candidates else None
     current_total = str(enhanced.get("total", "")).strip()
