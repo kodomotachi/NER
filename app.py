@@ -4,9 +4,7 @@ Run:
     streamlit run app.py
 
 Notes:
-    - Install the Tesseract binary separately if you use pytesseract.
-      macOS:  brew install tesseract
-      Ubuntu: apt-get install -y tesseract-ocr
+    - PaddleOCR downloads its OCR model weights on first use.
     - Put your fine-tuned HuggingFace token-classification model in the path
       configured by DEFAULT_MODEL_PATH, or change it in the sidebar.
 """
@@ -96,7 +94,7 @@ def image_from_streamlit_upload(uploaded_file: Any) -> Image.Image:
 def preprocess_for_ocr(image: Image.Image) -> Image.Image:
     """Apply light preprocessing that usually helps receipt OCR."""
     grayscale = ImageOps.grayscale(image)
-    # Upscale small webcam captures. Tesseract generally likes larger text.
+    # Upscale small webcam captures. Receipt OCR usually benefits from larger text.
     width, height = grayscale.size
     if max(width, height) < 1600:
         scale = 1600 / max(width, height)
@@ -104,29 +102,117 @@ def preprocess_for_ocr(image: Image.Image) -> Image.Image:
     return grayscale
 
 
-def extract_text_with_ocr(image: Image.Image, engine: str = "pytesseract") -> str:
-    """Extract raw English text from a receipt image."""
+def extract_text_with_ocr(image: Image.Image) -> str:
+    """Extract raw English text from a receipt image with PaddleOCR."""
+    import numpy as np
+
     processed = preprocess_for_ocr(image)
-
-    if engine == "easyocr":
-        import numpy as np
-
-        reader = load_easyocr_reader()
-        lines = reader.readtext(np.array(processed), detail=0, paragraph=True)
-        return "\n".join(line.strip() for line in lines if line.strip())
-
-    import pytesseract
-
-    config = "--oem 3 --psm 6 -l eng"
-    return pytesseract.image_to_string(processed, config=config).strip()
+    ocr = load_paddleocr_reader()
+    result = run_paddleocr(ocr, np.array(processed.convert("RGB")))
+    return "\n".join(extract_paddleocr_lines(result)).strip()
 
 
-@st.cache_resource(show_spinner="Loading EasyOCR reader...")
-def load_easyocr_reader():
-    """Load EasyOCR once; it is expensive to initialize repeatedly."""
-    import easyocr
+@st.cache_resource(show_spinner="Loading PaddleOCR reader...")
+def load_paddleocr_reader():
+    """Load PaddleOCR once; the first run may download OCR weights."""
+    from paddleocr import PaddleOCR
 
-    return easyocr.Reader(["en"], gpu=False)
+    init_attempts = [
+        {
+            "lang": "en",
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+            "engine": "paddle",
+        },
+        {
+            "lang": "en",
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+        },
+        {
+            "lang": "en",
+            "use_angle_cls": True,
+            "show_log": False,
+        },
+        {"lang": "en"},
+    ]
+    last_error: Exception | None = None
+    for kwargs in init_attempts:
+        try:
+            return PaddleOCR(**kwargs)
+        except TypeError as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    return PaddleOCR(lang="en")
+
+
+def run_paddleocr(ocr: Any, image_array: Any) -> Any:
+    """Run PaddleOCR across both newer 3.x and older 2.x style APIs."""
+    if hasattr(ocr, "predict"):
+        return ocr.predict(image_array)
+    if hasattr(ocr, "ocr"):
+        try:
+            return ocr.ocr(image_array, cls=True)
+        except TypeError:
+            return ocr.ocr(image_array)
+    raise RuntimeError("Installed paddleocr package does not expose a supported OCR API.")
+
+
+def extract_paddleocr_lines(result: Any) -> list[str]:
+    """Normalize PaddleOCR 3.x and 2.x outputs into ordered text lines."""
+    lines: list[str] = []
+
+    def add_text(value: Any) -> None:
+        if value is None:
+            return
+        text = str(value).strip()
+        if text:
+            lines.append(text)
+
+    for page in result or []:
+        page_data = page
+        if hasattr(page, "res"):
+            try:
+                page_data = page.res
+            except Exception:
+                page_data = page
+        if hasattr(page, "json"):
+            try:
+                page_json = page.json
+                page_data = page_json() if callable(page_json) else page_json
+            except Exception:
+                page_data = page
+        if isinstance(page_data, dict) and "res" in page_data:
+            page_data = page_data["res"]
+
+        # PaddleOCR 3.x returns result objects/dicts with rec_texts.
+        if isinstance(page_data, dict) and page_data.get("rec_texts") is not None:
+            for text in page_data.get("rec_texts") or []:
+                add_text(text)
+            continue
+
+        # PaddleOCR 2.x commonly returns [box, (text, confidence)] rows.
+        if isinstance(page_data, list):
+            for item in page_data:
+                if not item:
+                    continue
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    rec = item[1]
+                    if isinstance(rec, (list, tuple)) and rec:
+                        add_text(rec[0])
+                    else:
+                        add_text(rec)
+                elif isinstance(item, dict):
+                    add_text(item.get("text") or item.get("rec_text"))
+            continue
+
+        if isinstance(page_data, dict):
+            add_text(page_data.get("text") or page_data.get("rec_text"))
+
+    return lines
 
 
 @st.cache_resource(show_spinner="Loading NER model...")
@@ -420,7 +506,7 @@ def main() -> None:
     with st.sidebar:
         st.header("Settings")
         model_path = st.text_input("HuggingFace model path", value=str(DEFAULT_MODEL_PATH))
-        ocr_engine = st.selectbox("OCR engine", ["pytesseract", "easyocr"], index=0)
+        st.caption("OCR engine: PaddleOCR for English receipt text detection and recognition.")
         save_to_db = st.toggle("Save processed receipts", value=True)
         show_raw_ner = st.toggle("Show raw NER output", value=False)
 
@@ -469,9 +555,9 @@ def main() -> None:
 
             with st.spinner("Extracting text with OCR..."):
                 try:
-                    raw_text = extract_text_with_ocr(image, engine=ocr_engine)
+                    raw_text = extract_text_with_ocr(image)
                 except Exception as exc:
-                    st.error("OCR failed. Try switching OCR engine in the sidebar or use a clearer image.")
+                    st.error("PaddleOCR failed. Check that paddleocr/paddlepaddle are installed, or try a clearer image.")
                     st.exception(exc)
                     return
 

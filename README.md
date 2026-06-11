@@ -7,7 +7,7 @@ The local app lets a user upload or capture a receipt image, run OCR, pass the e
 ## What This Branch Contains
 
 - Streamlit receipt review app in `app.py`
-- OCR support with `pytesseract` and optional `EasyOCR`
+- OCR support with PaddleOCR
 - HuggingFace `pipeline("ner")` integration for a fine-tuned RoBERTa token-classification model
 - SQLite persistence for reviewed receipt scans
 - SROIE/invoice data preparation scripts
@@ -34,15 +34,10 @@ pip install -r requirements-streamlit.txt
 streamlit run app.py
 ```
 
-If you use `pytesseract`, install the system Tesseract binary too:
+PaddleOCR downloads its OCR model weights on first use. If you install manually, make sure both packages are available:
 
 ```bash
-# macOS
-brew install tesseract
-
-# Ubuntu / Colab
-sudo apt-get update
-sudo apt-get install -y tesseract-ocr
+pip install paddleocr paddlepaddle
 ```
 
 ## Model Path

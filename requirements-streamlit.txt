@@ -4,5 +4,5 @@ torch
 pillow
 pandas
 numpy
-pytesseract
-easyocr
+paddleocr
+paddlepaddle
