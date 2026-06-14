@@ -27,7 +27,7 @@ from transformers import pipeline
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "receipt_scans.sqlite3"
-DEFAULT_MODEL_PATH = APP_DIR / "models" / "deep_ner" / "khai_roberta_token_cls" / "best"
+DEFAULT_MODEL_PATH = APP_DIR / "models" / "deep_ner" / "roberta_token_cls" / "best"
 REQUIRED_MODEL_FILES = ("config.json",)
 
 

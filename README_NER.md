@@ -42,7 +42,7 @@ Khuyến nghị dùng Colab GPU cho phần deep learning. Trên Colab:
 Các notebook nằm trong thư mục `notebooks/`:
 
 1. `00_setup_and_prepare.ipynb`: cài dependency Transformer và tạo lại dữ liệu processed.
-2. `01_transformer_token_classification_khoi.ipynb`: chạy Transformer + Token Classification.
+2. `01_transformer_token_classification.ipynb`: chạy Transformer + Token Classification.
 3. `02_transformer_crf_models.ipynb`: chạy BERT+CRF, RoBERTa+CRF, XLM-R+CRF.
 4. `03_global_pointer_and_global_context.ipynb`: chạy Global Pointer và BERT + Global Context.
 5. `04_select_best_model.ipynb`: đọc toàn bộ kết quả, xếp hạng theo `valid.entity_f1`, và chọn model tốt nhất.

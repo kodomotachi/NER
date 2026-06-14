@@ -45,7 +45,7 @@ pip install paddleocr paddlepaddle
 The Streamlit app expects a local HuggingFace token-classification export. The default path is:
 
 ```text
-models/deep_ner/khai_roberta_token_cls/best
+models/deep_ner/roberta_token_cls/best
 ```
 
 That folder should contain files such as:
@@ -184,7 +184,7 @@ Notebook order:
 
 ```text
 notebooks/00_setup_and_prepare.ipynb
-notebooks/01_transformer_token_classification_khoi.ipynb
+notebooks/01_transformer_token_classification.ipynb
 notebooks/02_transformer_crf_models.ipynb
 notebooks/03_global_pointer_and_global_context.ipynb
 notebooks/04_select_best_model.ipynb
@@ -260,7 +260,7 @@ NER/
 │   └── deep_ner/
 ├── notebooks/
 │   ├── 00_setup_and_prepare.ipynb
-│   ├── 01_transformer_token_classification_khoi.ipynb
+│   ├── 01_transformer_token_classification.ipynb
 │   ├── 02_transformer_crf_models.ipynb
 │   ├── 03_global_pointer_and_global_context.ipynb
 │   ├── 04_select_best_model.ipynb

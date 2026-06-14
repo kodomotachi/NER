@@ -34,7 +34,7 @@ FIELD_MAP = {
     "total": "total",
 }
 DEFAULT_DATASET = ROOT / "data" / "raw" / "SROIE_datasetv2.zip"
-DEFAULT_MODEL = ROOT / "models" / "deep_ner" / "khai_roberta_token_cls" / "best"
+DEFAULT_MODEL = ROOT / "models" / "deep_ner" / "roberta_token_cls" / "best"
 DEFAULT_REPORT = ROOT / "reports" / "sroie_receipt_evaluation.md"
 DEFAULT_JSON = ROOT / "reports" / "sroie_receipt_evaluation.json"
 DEFAULT_CSV = ROOT / "reports" / "sroie_receipt_predictions.csv"

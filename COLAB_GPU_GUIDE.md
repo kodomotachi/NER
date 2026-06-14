@@ -95,7 +95,7 @@ notebooks/*.executed.ipynb
 Run:
 
 1. `00_setup_and_prepare.ipynb`
-2. `01_transformer_token_classification_khoi.ipynb`
+2. `01_transformer_token_classification.ipynb`
 3. `02_transformer_crf_models.ipynb`
 4. `03_global_pointer_and_global_context.ipynb`
 5. `04_select_best_model.ipynb`
