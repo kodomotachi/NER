@@ -428,6 +428,21 @@ def train_custom_sequence_model(
     model_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), model_dir / "pytorch_model.bin")
     tokenizer.save_pretrained(model_dir)
+    (model_dir / "ner_config.json").write_text(
+        json.dumps(
+            {
+                "architecture": architecture,
+                "base_model": model_name,
+                "label2id": label2id,
+                "max_length": max_length,
+                "add_special_tokens": add_special_tokens,
+                "train_rows": len(train_rows),
+            },
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     result = {
         "name": name,
         "architecture": architecture,

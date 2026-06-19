@@ -5,8 +5,8 @@ Run:
 
 Notes:
     - PaddleOCR downloads its OCR model weights on first use.
-    - Put your fine-tuned HuggingFace token-classification model in the path
-      configured by DEFAULT_MODEL_PATH, or change it in the sidebar.
+    - Put the full-trained RoBERTa-CRF checkpoint in the path configured by
+      DEFAULT_MODEL_PATH, or change it in the sidebar.
 """
 
 from __future__ import annotations
@@ -21,14 +21,18 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+import torch
 from PIL import Image, ImageOps
-from transformers import pipeline
+
+from src.deep_ner_models import TransformerCRF, load_fast_tokenizer
 
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR / "receipt_scans.sqlite3"
-DEFAULT_MODEL_PATH = APP_DIR / "models" / "deep_ner" / "roberta_token_cls" / "best"
-REQUIRED_MODEL_FILES = ("config.json",)
+DEFAULT_MODEL_PATH = APP_DIR / "models" / "deep_ner" / "roberta_crf"
+MODEL_METADATA_FILE = "ner_config.json"
+REQUIRED_MODEL_FILES = ("pytorch_model.bin",)
+NER_TOKEN_RE = re.compile(r"[A-Za-z0-9]+(?:[._%+\-/@'][A-Za-z0-9]+)*|[^\w\s]", re.UNICODE)
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
@@ -215,39 +219,111 @@ def extract_paddleocr_lines(result: Any) -> list[str]:
     return lines
 
 
-@st.cache_resource(show_spinner="Loading NER model...")
-def load_ner_pipeline(model_path: str):
-    """Load a local HuggingFace token-classification model once per session."""
-    model_path = str(Path(model_path).expanduser().resolve())
-    return pipeline(
-        "ner",
-        model=model_path,
-        tokenizer=model_path,
-        aggregation_strategy="simple",
-    )
+def inference_device() -> torch.device:
+    """Use CUDA, Apple MPS, or CPU in that order."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def load_checkpoint_metadata(model_path: Path, state_dict: dict[str, torch.Tensor]) -> dict[str, Any]:
+    """Load CRF architecture metadata and verify its label order."""
+    metadata_path = model_path / MODEL_METADATA_FILE
+    if not metadata_path.exists():
+        raise FileNotFoundError(
+            f"Missing {MODEL_METADATA_FILE}. Re-run the CRF training notebook so the checkpoint includes its label map."
+        )
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    label2id = {str(label): int(index) for label, index in metadata.get("label2id", {}).items()}
+    if not label2id:
+        raise ValueError(f"{metadata_path} does not contain label2id.")
+
+    classifier_labels = int(state_dict["classifier.weight"].shape[0])
+    if len(label2id) != classifier_labels:
+        raise ValueError(
+            f"Checkpoint classifier has {classifier_labels} labels but {metadata_path} defines {len(label2id)}."
+        )
+    return metadata
+
+
+def adapt_crf_state_dict(state_dict: dict[str, torch.Tensor], model: TransformerCRF) -> dict[str, torch.Tensor]:
+    """Translate CRF parameter names between TorchCRF and pytorch-crf APIs."""
+    adapted = dict(state_dict)
+    target_keys = set(model.state_dict())
+    torchcrf_to_pytorch_crf = {
+        "crf.trans_matrix": "crf.transitions",
+        "crf.start_trans": "crf.start_transitions",
+        "crf.end_trans": "crf.end_transitions",
+    }
+    pytorch_crf_to_torchcrf = {target: source for source, target in torchcrf_to_pytorch_crf.items()}
+
+    mappings = (torchcrf_to_pytorch_crf, pytorch_crf_to_torchcrf)
+    for mapping in mappings:
+        for source, target in mapping.items():
+            if source in adapted and target in target_keys and target not in adapted:
+                adapted[target] = adapted.pop(source)
+    return adapted
+
+
+@st.cache_resource(show_spinner="Loading RoBERTa-CRF model...")
+def load_ner_model(model_path: str) -> dict[str, Any]:
+    """Load the custom RoBERTa-CRF checkpoint used by the best experiment."""
+    path = Path(model_path).expanduser().resolve()
+    try:
+        state_dict = torch.load(path / "pytorch_model.bin", map_location="cpu", weights_only=True)
+    except TypeError:
+        state_dict = torch.load(path / "pytorch_model.bin", map_location="cpu")
+
+    metadata = load_checkpoint_metadata(path, state_dict)
+    label2id = {str(label): int(index) for label, index in metadata["label2id"].items()}
+    id2label = {index: label for label, index in label2id.items()}
+    base_model = str(metadata.get("base_model", "roberta-base"))
+
+    tokenizer = load_fast_tokenizer(str(path))
+    model = TransformerCRF(base_model, len(label2id))
+    state_dict = adapt_crf_state_dict(state_dict, model)
+    model.load_state_dict(state_dict)
+    device = inference_device()
+    model.to(device)
+    model.eval()
+    return {
+        "model": model,
+        "tokenizer": tokenizer,
+        "id2label": id2label,
+        "device": device,
+        "max_length": int(metadata.get("max_length", 384)),
+    }
 
 
 def validate_model_path(model_path: str) -> tuple[bool, str]:
-    """Return whether a local HuggingFace model folder looks loadable."""
+    """Return whether a local custom RoBERTa-CRF folder looks loadable."""
     path = Path(model_path).expanduser()
     if not path.exists():
         return False, f"Model folder does not exist: {path}"
     if not path.is_dir():
         return False, f"Model path is not a folder: {path}"
-    missing = [name for name in REQUIRED_MODEL_FILES if not (path / name).exists()]
-    has_weight = any((path / name).exists() for name in ("model.safetensors", "pytorch_model.bin"))
+    required = (*REQUIRED_MODEL_FILES, MODEL_METADATA_FILE)
+    missing = [name for name in required if not (path / name).exists()]
     has_tokenizer = any((path / name).exists() for name in ("tokenizer.json", "vocab.json", "vocab.txt"))
     if missing:
         return False, f"Model folder is missing required file(s): {', '.join(missing)}"
-    if not has_weight:
-        return False, "Model folder is missing weights: model.safetensors or pytorch_model.bin"
     if not has_tokenizer:
         return False, "Model folder is missing tokenizer files."
+    try:
+        metadata = json.loads((path / MODEL_METADATA_FILE).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, f"Cannot read {MODEL_METADATA_FILE}: {exc}"
+    train_rows = metadata.get("train_rows")
+    if isinstance(train_rows, int) and train_rows < 100:
+        return True, f"This checkpoint was trained on only {train_rows} rows. Replace it with the full-trained Colab checkpoint."
     return True, ""
 
 
 def normalize_label(label: str) -> str:
-    """Normalize common label names from token-classification outputs."""
+    """Normalize receipt label names from the decoded CRF sequence."""
     label = label.upper().replace("B-", "").replace("I-", "")
     aliases = {
         "COMPANY": "vendor",
@@ -263,55 +339,99 @@ def normalize_label(label: str) -> str:
     return aliases.get(label, label.lower())
 
 
-def clean_entity_text(text: str) -> str:
-    """Clean HuggingFace subword spacing artifacts."""
-    return (
-        text.replace(" ##", "")
-        .replace("Ġ", " ")
-        .replace("▁", " ")
-        .replace(" ,", ",")
-        .replace(" .", ".")
-        .replace(" :", ":")
-        .strip()
+def predict_crf_entities(raw_text: str, bundle: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Decode OCR text with RoBERTa-CRF and aggregate its BIO entity spans."""
+    token_matches = list(NER_TOKEN_RE.finditer(raw_text))
+    tokens = [match.group() for match in token_matches]
+    if not tokens:
+        return {}, []
+
+    tokenizer = bundle["tokenizer"]
+    encoding = tokenizer(
+        tokens,
+        is_split_into_words=True,
+        truncation=True,
+        max_length=bundle["max_length"],
+        padding=False,
+        add_special_tokens=False,
+        return_tensors="pt",
     )
+    word_ids = encoding.word_ids(batch_index=0)
+    model_inputs = {
+        key: value.to(bundle["device"])
+        for key, value in encoding.items()
+        if key in {"input_ids", "attention_mask"}
+    }
+    model = bundle["model"]
+    with torch.no_grad():
+        hidden = model.encoder(**model_inputs).last_hidden_state
+        emissions = model.classifier(model.dropout(hidden))
+        mask = model_inputs["attention_mask"].bool()
+        if model.crf_style == "torchcrf":
+            decoded = model.crf.decode(emissions, mask=mask)[0]
+        else:
+            decoded = model.crf.viterbi_decode(emissions, mask)[0]
+        emission_probabilities = emissions.softmax(dim=-1)[0].cpu()
 
+    tags_by_word: dict[int, str] = {}
+    confidence_by_word: dict[int, float] = {}
+    for token_position, (prediction, word_id) in enumerate(zip(decoded, word_ids)):
+        if word_id is not None and word_id not in tags_by_word:
+            tags_by_word[word_id] = bundle["id2label"][int(prediction)]
+            confidence_by_word[word_id] = float(emission_probabilities[token_position, int(prediction)])
 
-def parse_ner_entities(ner_output: list[dict[str, Any]]) -> dict[str, Any]:
-    """Convert pipeline output into a compact receipt entity dictionary."""
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in ner_output:
-        label = normalize_label(str(item.get("entity_group") or item.get("entity") or "unknown"))
-        value = clean_entity_text(str(item.get("word", "")))
-        if not value:
+    observed_words = min(len(tokens), max(tags_by_word, default=-1) + 1)
+    tags = [tags_by_word.get(index, "O") for index in range(observed_words)]
+    spans: list[tuple[int, int, str]] = []
+    active_start: int | None = None
+    active_label: str | None = None
+
+    for index, tag in enumerate(tags + ["O"]):
+        if tag == "O":
+            if active_start is not None and active_label is not None:
+                spans.append((active_start, index, active_label))
+            active_start = None
+            active_label = None
             continue
-        grouped.setdefault(label, []).append(
-            {
-                "text": value,
-                "confidence": round(float(item.get("score", 0.0)), 4),
-                "start": item.get("start"),
-                "end": item.get("end"),
-            }
-        )
+
+        prefix, label = tag.split("-", 1)
+        if active_start is None or prefix == "B" or label != active_label:
+            if active_start is not None and active_label is not None:
+                spans.append((active_start, index, active_label))
+            active_start = index
+            active_label = label
+
+    raw_predictions: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for start_word, end_word, model_label in spans:
+        start_char = token_matches[start_word].start()
+        end_char = token_matches[end_word - 1].end()
+        value = normalize_receipt_text(raw_text[start_char:end_char])
+        normalized_label = normalize_label(model_label)
+        span_confidences = [confidence_by_word[index] for index in range(start_word, end_word) if index in confidence_by_word]
+        confidence = sum(span_confidences) / max(len(span_confidences), 1)
+        prediction = {
+            "entity_group": model_label,
+            "normalized_label": normalized_label,
+            "word": value,
+            "start": start_char,
+            "end": end_char,
+            "confidence": round(confidence, 4),
+            "source": "roberta_crf",
+        }
+        raw_predictions.append(prediction)
+        grouped.setdefault(normalized_label, []).append(prediction)
 
     structured: dict[str, Any] = {}
-    for label, candidates in grouped.items():
-        best = max(candidates, key=lambda candidate: candidate["confidence"])
-        structured[label] = best["text"]
+    for label, predictions in grouped.items():
+        # SROIE has one gold value per field. If CRF emits multiple spans with the
+        # same label, use the span supported by the strongest model emissions.
+        best = max(predictions, key=lambda item: (float(item["confidence"]), len(item["word"]), -int(item["start"])))
+        structured[label] = best["word"]
         structured[f"{label}_confidence"] = best["confidence"]
-        structured[f"{label}_candidates"] = candidates
-
-    return structured
-
-
-def normalize_amount_text(value: str) -> str:
-    """Normalize OCR amount strings such as RM32,69 or 32 69 into 32.69."""
-    value = value.upper().replace("RM", "").replace("$", "").strip()
-    value = re.sub(r"[^\d.,]", "", value)
-    if "," in value and "." in value:
-        value = value.replace(",", "")
-    if "," in value and "." not in value:
-        value = value.replace(",", ".")
-    return value
+        structured[f"{label}_source"] = "roberta_crf"
+        structured[f"{label}_candidates"] = predictions
+    return structured, raw_predictions
 
 
 def normalize_receipt_text(value: str) -> str:
@@ -491,147 +611,8 @@ def extract_merchant_address_from_ocr(raw_text: str) -> str | None:
     return clean_receipt_field(", ".join(best))
 
 
-def amount_to_float(value: str) -> float | None:
-    """Convert a normalized amount string to float for ranking/filtering."""
-    try:
-        return float(normalize_amount_text(value))
-    except ValueError:
-        return None
-
-
-def amount_score(line: str) -> int:
-    """Rank receipt lines that are likely to contain the final payable total."""
-    lower = line.lower()
-    score = 0
-    if "grand total" in lower or "net total" in lower or "nett total" in lower:
-        score += 8
-    if "amount due" in lower or "balance due" in lower or "total due" in lower:
-        score += 7
-    if "payable" in lower:
-        score += 6
-    if "grand" in lower:
-        score += 5
-    if "total" in lower:
-        score += 4
-    if "amount" in lower:
-        score += 2
-    if "incl" in lower or "including" in lower:
-        score += 1
-    if "excluding" in lower:
-        score -= 5
-    if "subtotal" in lower or "sub total" in lower:
-        score -= 4
-    if "sales" in lower:
-        score -= 3
-    if "cash" in lower or "change" in lower or "tender" in lower or "paid" in lower:
-        score -= 4
-    if "tax" in lower or "gst" in lower or "vat" in lower:
-        score -= 2
-    if "discount" in lower or "round" in lower:
-        score -= 3
-    if "price" in lower or "s/price" in lower:
-        score -= 3
-    if "qty" in lower or "quantity" in lower:
-        score -= 1 if "total" in lower else 3
-    return score
-
-
-def extract_total_candidates_from_ocr(raw_text: str) -> list[dict[str, Any]]:
-    """Find and score likely receipt total amounts from OCR text."""
-    decimal_pattern = re.compile(
-        r"(?<![\d/])(?:RM|MYR|\$)?\s*((?:\d{1,3}(?:,\d{3})+|\d{1,6})[.,]\d{2})(?![\d/])",
-        re.IGNORECASE,
-    )
-    candidates: list[dict[str, Any]] = []
-
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-    for line_index, line in enumerate(lines):
-        base_score = amount_score(line)
-        for match in decimal_pattern.finditer(line):
-            amount = normalize_amount_text(match.group(1))
-            amount_value = amount_to_float(amount)
-            if amount_value is None or amount_value <= 0:
-                continue
-            score = base_score + 3
-            # Final totals are often near the lower half of receipts.
-            score += int(3 * (line_index / max(len(lines), 1)))
-            candidates.append(
-                {
-                    "amount": amount,
-                    "score": score,
-                    "line_number": line_index + 1,
-                    "line": line,
-                    "source": "same_line_decimal",
-                }
-            )
-        # Fallback for OCR that separates cents with a space: "32 69".
-        spaced = None if decimal_pattern.search(line) else re.search(r"(?<!\d)(\d{1,6})\s+(\d{2})(?!\d)", line)
-        if spaced:
-            amount = f"{spaced.group(1)}.{spaced.group(2)}"
-            amount_value = amount_to_float(amount)
-            if amount_value and amount_value > 0:
-                candidates.append(
-                    {
-                        "amount": amount,
-                        "score": base_score + 2,
-                        "line_number": line_index + 1,
-                        "line": line,
-                        "source": "same_line_spaced_decimal",
-                    }
-                )
-
-        # Some OCR outputs put the label and amount on adjacent lines.
-        if base_score > 2 and not decimal_pattern.search(line):
-            for offset, next_line in enumerate(lines[line_index + 1 : line_index + 3], start=1):
-                for match in decimal_pattern.finditer(next_line):
-                    amount = normalize_amount_text(match.group(1))
-                    amount_value = amount_to_float(amount)
-                    if amount_value is None or amount_value <= 0:
-                        continue
-                    candidates.append(
-                        {
-                            "amount": amount,
-                            "score": base_score + 2 - offset,
-                            "line_number": line_index + 1 + offset,
-                            "line": next_line,
-                            "source": f"near_total_label_plus_{offset}",
-                        }
-                    )
-
-    if candidates:
-        best_by_amount: dict[str, dict[str, Any]] = {}
-        for candidate in candidates:
-            current = best_by_amount.get(candidate["amount"])
-            if current is None or (candidate["score"], candidate["line_number"]) > (current["score"], current["line_number"]):
-                best_by_amount[candidate["amount"]] = candidate
-        return sorted(best_by_amount.values(), key=lambda item: (item["score"], item["line_number"]), reverse=True)
-
-    # Last resort: choose the last decimal-looking amount in the whole OCR text.
-    all_decimals = []
-    for line_index, line in enumerate(lines):
-        for match in decimal_pattern.finditer(line):
-            amount = normalize_amount_text(match.group(1))
-            if amount_to_float(amount):
-                all_decimals.append(
-                    {
-                        "amount": amount,
-                        "score": 0,
-                        "line_number": line_index + 1,
-                        "line": line,
-                        "source": "last_decimal_fallback",
-                    }
-                )
-    return all_decimals[-5:][::-1]
-
-
-def extract_decimal_total_from_ocr(raw_text: str) -> str | None:
-    """Find the best decimal total from OCR text."""
-    candidates = extract_total_candidates_from_ocr(raw_text)
-    return candidates[0]["amount"] if candidates else None
-
-
 def enhance_receipt_entities(raw_text: str, entities: dict[str, Any]) -> dict[str, Any]:
-    """Patch common receipt extraction issues after NER, especially decimal totals."""
+    """Improve date/address fields without overriding model-predicted totals."""
     enhanced = dict(entities)
 
     date_from_ocr = extract_date_from_ocr(raw_text)
@@ -651,19 +632,6 @@ def enhance_receipt_entities(raw_text: str, entities: dict[str, Any]) -> dict[st
             enhanced["address"] = address_from_ocr
             enhanced["address_source"] = "ocr_header_rule"
             enhanced["address_confidence"] = max(float(enhanced.get("address_confidence", 0.0) or 0.0), 0.95)
-
-    total_candidates = extract_total_candidates_from_ocr(raw_text)
-    decimal_total = total_candidates[0]["amount"] if total_candidates else None
-    current_total = str(enhanced.get("total", "")).strip()
-
-    if decimal_total and (not current_total or "." not in current_total or len(decimal_total) > len(current_total)):
-        enhanced["total"] = decimal_total
-        enhanced["total_source"] = "ocr_regex"
-        enhanced["total_confidence"] = max(float(enhanced.get("total_confidence", 0.0) or 0.0), 0.99)
-    elif current_total:
-        enhanced["total"] = normalize_amount_text(current_total) or current_total
-    if total_candidates:
-        enhanced["total_ocr_candidates"] = total_candidates
 
     return enhanced
 
@@ -697,11 +665,11 @@ def main() -> None:
     init_db()
 
     st.title("Receipt OCR + NER Extractor")
-    st.caption("Capture an English receipt, extract OCR text, run your RoBERTa NER model, and save entities to SQLite.")
+    st.caption("Capture an English receipt, extract OCR text, run the selected RoBERTa-CRF model, and save entities to SQLite.")
 
     with st.sidebar:
         st.header("Settings")
-        model_path = st.text_input("HuggingFace model path", value=str(DEFAULT_MODEL_PATH))
+        model_path = st.text_input("RoBERTa-CRF model path", value=str(DEFAULT_MODEL_PATH))
         st.caption("OCR engine: PaddleOCR for English receipt text detection and recognition.")
         save_to_db = st.toggle("Save processed receipts", value=True)
         show_raw_ner = st.toggle("Show raw NER output", value=False)
@@ -709,6 +677,8 @@ def main() -> None:
         is_valid_model, model_error = validate_model_path(model_path)
         if is_valid_model:
             st.success("NER model folder looks valid.")
+            if model_error:
+                st.warning(model_error)
         else:
             st.warning(model_error)
             st.caption("Expected default:")
@@ -767,11 +737,11 @@ def main() -> None:
                     st.code(str(DEFAULT_MODEL_PATH), language="text")
                     return
                 try:
-                    ner = load_ner_pipeline(model_path)
-                    ner_output = ner(raw_text)
-                    entities = enhance_receipt_entities(raw_text, parse_ner_entities(ner_output))
+                    ner_bundle = load_ner_model(model_path)
+                    entities, ner_output = predict_crf_entities(raw_text, ner_bundle)
+                    entities = enhance_receipt_entities(raw_text, entities)
                 except Exception as exc:
-                    st.error("Could not load or run the NER model. Check that the model path points to a HuggingFace token-classification export.")
+                    st.error("Could not load or run the RoBERTa-CRF model. Check the checkpoint files and label metadata.")
                     st.exception(exc)
                     return
 
@@ -780,7 +750,7 @@ def main() -> None:
                 "entities": entities,
                 "ner_output": ner_output,
             }
-            st.success("Receipt processed. Review the extracted fields before saving.")
+            st.success("Receipt processed with RoBERTa-CRF.")
 
         if "last_receipt_result" in st.session_state:
             result = st.session_state["last_receipt_result"]
@@ -791,27 +761,6 @@ def main() -> None:
             st.metric("OCR characters", len(raw_text))
             with st.expander("Raw OCR text", expanded=False):
                 st.text_area("OCR output", raw_text, height=220, label_visibility="collapsed", key="review_raw_ocr_text")
-
-            total_candidates = entities.get("total_ocr_candidates", [])
-            if total_candidates:
-                candidate_options = [
-                    f"{item['amount']} | score={item['score']} | line {item['line_number']}: {item['line']}"
-                    for item in total_candidates[:8]
-                ]
-                with st.expander("Total amount candidates from OCR", expanded=True):
-                    selected_candidate = st.selectbox("Choose the correct total candidate", candidate_options)
-                    selected_amount = selected_candidate.split("|", 1)[0].strip()
-                    if selected_amount:
-                        entities["total"] = selected_amount
-                        entities["total_source"] = "user_selected_ocr_candidate"
-
-            reviewed_total = st.text_input("Review total before saving", value=str(entities.get("total", "")))
-            if reviewed_total:
-                normalized_reviewed_total = normalize_amount_text(reviewed_total) or reviewed_total
-                if normalized_reviewed_total != entities.get("total"):
-                    entities["total"] = normalized_reviewed_total
-                    entities["total_source"] = "user_review"
-                    entities["total_confidence"] = 1.0
 
             rows = entity_summary_rows(entities)
             if rows:
@@ -824,13 +773,13 @@ def main() -> None:
                 st.json(entities)
 
             if show_raw_ner:
-                with st.expander("Raw HuggingFace NER output", expanded=False):
+                with st.expander("Raw RoBERTa-CRF output", expanded=False):
                     st.json(ner_output)
 
             if save_to_db:
-                if st.button("Save reviewed result", type="primary"):
+                if st.button("Save extraction", type="primary"):
                     scan_id = save_scan(raw_text, entities)
-                    st.success(f"Reviewed receipt saved. Scan ID: {scan_id}")
+                    st.success(f"Receipt extraction saved. Scan ID: {scan_id}")
                     st.session_state["last_receipt_result"]["entities"] = entities
             else:
                 st.info("Saving is disabled in the sidebar.")

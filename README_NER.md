@@ -60,7 +60,15 @@ Các notebook hiện đã được đặt ở cấu hình train thật:
 LIMIT_TRAIN = None
 LIMIT_EVAL = None
 EPOCHS = 3
-MAX_LENGTH = 384
+MAX_LENGTH = 384  # notebook 01 và 03
+```
+
+Riêng notebook `02_transformer_crf_models.ipynb` dùng cấu hình production:
+
+```python
+BATCH_SIZE = 2
+MAX_LENGTH = 512
+RUN_ALL_CRF_MODELS = False  # chỉ retrain RoBERTa-CRF tốt nhất
 ```
 
 Nếu muốn test nhanh trước khi train thật, trong mỗi notebook đặt:
@@ -77,7 +85,9 @@ Khi train thật, dùng:
 LIMIT_TRAIN = None
 LIMIT_EVAL = None
 EPOCHS = 3
-MAX_LENGTH = 384
+MAX_LENGTH = 512
+BATCH_SIZE = 2
+RUN_ALL_CRF_MODELS = False
 ```
 
 Kết quả deep learning được lưu ở:
@@ -85,6 +95,43 @@ Kết quả deep learning được lưu ở:
 - `reports/deep_ner/*.json`
 - `reports/deep_ner/leaderboard.md`
 - `models/deep_ner/`
+
+## Chạy Streamlit bằng model tốt nhất
+
+Ứng dụng production mặc định dùng custom `RoBERTa + CRF` tại:
+
+```text
+models/deep_ner/roberta_crf
+```
+
+Sau khi chạy full notebook `02_transformer_crf_models.ipynb`, checkpoint gồm
+`pytorch_model.bin`, tokenizer và `ner_config.json`. File metadata lưu chính xác
+`base_model`, `label2id` và `max_length` để app decode đúng chuỗi BIO.
+
+`pytorch_model.bin` có kích thước khoảng 476 MB nên không được lưu bằng Git
+thông thường. Sau khi clone repo, hãy copy checkpoint full-train từ Colab vào
+`models/deep_ner/roberta_crf/` hoặc chạy lại notebook `02`. SHA-256 của checkpoint
+đã kiểm thử là:
+
+```text
+64c3c358e69844d2e92b7d9c04e03b364775b8d2cb65cf0f68f9426dd2851db8
+```
+
+```bash
+cd /Users/kodomotachi/specialist/NLP-test
+streamlit run app.py
+```
+
+Flow inference của app:
+
+```text
+Receipt image -> PaddleOCR -> RoBERTa encoder -> CRF Viterbi decode
+              -> BIO entity spans -> COMPANY / ADDRESS / DATE / TOTAL
+```
+
+Trường `TOTAL` được lấy trực tiếp từ span `B-TOTAL/I-TOTAL` của RoBERTa-CRF.
+App không dùng regex scoring và không yêu cầu người dùng chọn total candidate.
+Các rule OCR hiện chỉ bổ trợ độ đầy đủ của `DATE` và `ADDRESS`.
 
 ## Nhãn NER
 

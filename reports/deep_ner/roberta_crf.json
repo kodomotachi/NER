@@ -1,0 +1,24 @@
+{
+  "name": "roberta_crf",
+  "architecture": "crf",
+  "base_model": "roberta-base",
+  "train_rows": 563,
+  "valid": {
+    "token_precision_non_o": 0.8440303657694962,
+    "token_recall_non_o": 0.9577133907595928,
+    "token_f1_non_o": 0.8972853998532648,
+    "entity_precision": 0.7235494880546075,
+    "entity_recall": 0.8907563025210085,
+    "entity_f1": 0.7984934086629002
+  },
+  "test": {
+    "token_precision_non_o": 0.8170605037652557,
+    "token_recall_non_o": 0.9513227513227513,
+    "token_f1_non_o": 0.8790947824264859,
+    "entity_precision": 0.7291139240506329,
+    "entity_recall": 0.8834355828220859,
+    "entity_f1": 0.7988904299583911
+  },
+  "seconds": 675.58,
+  "model_path": "/Users/kodomotachi/specialist/NLP-test/models/deep_ner/roberta_crf"
+}

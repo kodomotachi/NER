@@ -1,0 +1,18 @@
+{
+  "architecture": "crf",
+  "base_model": "roberta-base",
+  "label2id": {
+    "O": 0,
+    "B-ADDRESS": 1,
+    "I-ADDRESS": 2,
+    "B-COMPANY": 3,
+    "I-COMPANY": 4,
+    "B-DATE": 5,
+    "I-DATE": 6,
+    "B-TOTAL": 7,
+    "I-TOTAL": 8
+  },
+  "max_length": 512,
+  "add_special_tokens": false,
+  "train_rows": 563
+}

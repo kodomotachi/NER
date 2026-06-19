@@ -108,6 +108,20 @@ reports/deep_ner/leaderboard.md
 
 ## 5. If Colab runs out of VRAM
 
+For the production RoBERTa-CRF retrain, use:
+
+```python
+LIMIT_TRAIN = None
+LIMIT_EVAL = None
+EPOCHS = 3
+MAX_LENGTH = 512
+BATCH_SIZE = 2
+RUN_ALL_CRF_MODELS = False
+```
+
+This runs only `roberta_crf`. Set `RUN_ALL_CRF_MODELS = True` only when you
+need to rebuild the complete CRF leaderboard.
+
 Keep full data, but reduce batch size:
 
 ```python

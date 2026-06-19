@@ -36,6 +36,11 @@ data/external/*
 # Models & reports output
 models/*
 !models/.gitkeep
+!models/deep_ner/
+models/deep_ner/*
+!models/deep_ner/roberta_crf/
+models/deep_ner/roberta_crf/*
+!models/deep_ner/roberta_crf/ner_config.json
 reports/**/*.html
 reports/**/*.pdf
 !reports/figures/.gitkeep
@@ -48,7 +53,10 @@ notebooks/*.executed.ipynb
 data/raw/*.zip
 data/processed/*.jsonl
 data/processed/*.json
-reports/deep_ner/
+!reports/deep_ner/
+reports/deep_ner/*
+!reports/deep_ner/leaderboard.md
+!reports/deep_ner/roberta_crf.json
 CLAUDE.md
 graphify-out/obsidian/.obsidian/graph.json
 graphify-out/GRAPH_REPORT.md
